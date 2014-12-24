@@ -28,34 +28,39 @@ import time
 class GMM:
     ## Initialisation
     def __init__ (self, dim, mix=1):
+        """Initialises a GMM of required dimensionality and (optional) mixture count"""
         self.weights    = (1.0/mix) * np.ones(mix)
         self.means      = np.random.randn(mix, dim)
         self.vars       = np.ones((mix, dim))
         self.mix        = mix
         self.dim        = dim
-        self.varfloor   = 0.01
+        self.__varfloor__   = 0.01
 
     ## Printing means, variances and weights
     def __str__ (self):
+        """Prints the GMM object"""
         return "Means:\n%s\nVariances:\n%s\n Weights:\n%s\n" % (self.means, self.vars, self.weights)
 
     ## Likelihood of a vector
-    def pdf(self, vec):
+    def likelihood(self, vec):
+        """Calculates likelihood of a (numpy) vector"""
         vecr    = np.tile (vec, self.mix).reshape(self.mix, self.dim)
         return (self.weights * ((2*np.pi)**(-0.5*self.dim)) * np.prod(self.vars,1)**(-0.5) ) * \
                 ( np.exp(-0.5 * np.sum( (vecr-self.means)**2 /self.vars, 1) ) )
 
     ## Posterior of a vector (normalised likelihood vector, sums to unity)
     def posterior(self, vec):
+        """Calculates posterior (normalised likelihood) of a vector given the GMM"""
         if self.mix == 1:
             return np.array([1])
         
-        post            = self.pdf (vec)
+        post            = self.likelihood (vec)
         postsum         = np.sum (post)
         return post/postsum #if (postsum > 1e-12) else np.zeros((self.mix))
 
     ## Double the number of mixtures
-    def doublemixtures (self):
+    def double_mixtures (self):
+        """Splits the number of mixtures of the GMM. Each mixture component is split"""
         bias            = np.zeros ((self.mix, self.dim))
         for i in range(self.mix):
             argmaxv             = np.argmax (self.vars[i])
@@ -67,21 +72,24 @@ class GMM:
         self.mix        = 2*self.mix
 
     ## Training step 1 of 3: Initialise statistics accumulation
-    def initstats (self):
-        self.sgam       = np.zeros(self.mix)
-        self.sgamx      = np.zeros((self.mix, self.dim))
-        self.sgamxx     = np.zeros((self.mix, self.dim))
+    def __init_stats__ (self):
+        """Initialises the accumulation of statistics for GMM re-estimation"""
+        self.__sgam__       = np.zeros(self.mix)
+        self.__sgamx__      = np.zeros((self.mix, self.dim))
+        self.__sgamxx__     = np.zeros((self.mix, self.dim))
 
     ## Training step 3 of 3: Recompute GMM parameters
-    def finishstats (self):
-        self.weights    = self.sgam / np.sum(self.sgam)
-        denom           = self.sgam.repeat(self.dim).reshape((self.mix,self.dim))
-        self.means      = self.sgamx / denom
-        self.vars       = self.sgamxx / denom - (self.means**2)
-        self.vars[self.vars < self.varfloor] = self.varfloor
+    def __finish_stats__ (self):
+        """Performs M-step of the EM"""
+        self.weights    = self.__sgam__ / np.sum(self.__sgam__)
+        denom           = self.__sgam__.repeat(self.dim).reshape((self.mix,self.dim))
+        self.means      = self.__sgamx__ / denom
+        self.vars       = self.__sgamxx__ / denom - (self.means**2)
+        self.vars[self.vars < self.__varfloor__] = self.__varfloor__
 
     ## Training step 2 of 3: Update the statistics from a set of features
-    def update_worker (self, mfclist, Q):
+    def __update_worker__ (self, mfclist, Q):
+        """Accumulates statistics from a list of files - worker routine"""
         sgam        = np.zeros(self.mix)
         sgamx       = np.zeros((self.mix, self.dim))
         sgamxx      = np.zeros((self.mix, self.dim))
@@ -97,14 +105,15 @@ class GMM:
         Q.put([sgam, sgamx, sgamxx])
 
     ## GMM update routine - master
-    def updatestats (self, mfclist, threads=cpu_count()):
+    def __update_stats__ (self, mfclist, threads=cpu_count()):
+        """Accumulates statistics from a list of files"""
         with open(mfclist, 'r') as f:
             mfcfiles = f.read().splitlines()
 
         Q = Queue()
         processes = []
         for thr in xrange(threads):
-            p = Process (target=self.update_worker, args=(mfcfiles[thr::threads], Q))
+            p = Process (target=self.__update_worker__, args=(mfcfiles[thr::threads], Q))
             p.start()
             processes.append(p)
 
@@ -113,19 +122,21 @@ class GMM:
         
         for thr in xrange(threads):
             sgam, sgamx, sgamxx = Q.get()
-            self.sgam       += sgam
-            self.sgamx      += sgamx
-            self.sgamxx     += sgamxx
+            self.__sgam__       += sgam
+            self.__sgamx__      += sgamx
+            self.__sgamxx__     += sgamxx
 
     ## Expectation-Maximisation (EM)
     def em (self, mfclist, threads=cpu_count()):
+        """A single expectation maximisation step"""
         print "Running EM on", str(self.mix), "mixtures"
-        self.initstats()
-        self.updatestats(mfclist, threads)
-        self.finishstats()
+        self.__init_stats__()
+        self.__update_stats__(mfclist, threads)
+        self.__finish_stats__()
 
     ## Train GMM (wrapper)
     def train(self, mfclist, mix, threads=cpu_count()):
+        """Wrapper of training a GMM"""
         print "CPU threads being used:", str(threads)
         if not (np.log(mix)/np.log(2)).is_integer():
             print "Current version supports mixtures only in powers of 2. Training more mixtures."
@@ -140,7 +151,7 @@ class GMM:
             return
 
         while m < mix:
-            self.doublemixtures()
+            self.double_mixtures()
             for i in range(3):
                 self.em (mfclist)
             m *= 2
@@ -148,7 +159,8 @@ class GMM:
             self.em (mfclist)
 
     ## Save the GMM
-    def saveme (self, filename):
+    def saveas (self, filename):
+        """Saves the GMM object"""
         import pickle
         with open (filename, 'w') as f:
             pickle.dump (self, f)
